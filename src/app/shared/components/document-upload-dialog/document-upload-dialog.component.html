@@ -1,0 +1,84 @@
+<h2 mat-dialog-title>Upload {{data.document_name}}</h2>
+
+<mat-dialog-content>
+  <div class="upload-container" style="padding: 20px;">
+    <p>Please upload your {{data.document_name}} to proceed</p>
+
+    <div style="margin: 20px 0;">
+      <input type="file" (change)="onFileSelected($event)" accept=".jpg,.jpeg,.png,.pdf">
+    </div>
+
+    <div *ngIf="selectedFile" style="margin-top: 10px; color: green;">
+      Selected: {{selectedFile.name}}
+    </div>
+
+    <!-- Verification Status -->
+    <div *ngIf="isVerifying" style="margin-top: 20px; text-align: center;">
+      <mat-spinner diameter="40" style="margin: 0 auto;"></mat-spinner>
+      <p style="margin-top: 10px;">{{verificationMessage}}</p>
+    </div>
+
+    <div *ngIf="verificationMessage && !isVerifying" style="margin-top: 10px;"
+      [style.color]="verificationFailed ? 'red' : 'green'">
+      {{verificationMessage}}
+    </div>
+
+    <!-- Extraction Status -->
+    <div *ngIf="isExtracting" style="margin-top: 20px; text-align: center;">
+      <mat-spinner diameter="40" style="margin: 0 auto;"></mat-spinner>
+      <p style="margin-top: 10px;">Extracting data from document...</p>
+    </div>
+
+    <!-- Error Message -->
+    <div *ngIf="extractionError"
+      style="margin-top: 15px; padding: 10px; background-color: #ffebee; border-left: 4px solid #f44336; color: #c62828;">
+      <strong>Error:</strong> {{extractionError}}
+      <button mat-button color="primary" (click)="retryExtraction()" style="margin-left: 10px;">Retry</button>
+    </div>
+
+    <!-- Extracted Data Preview -->
+    <div *ngIf="extractedData && !isExtracting"
+      style="margin-top: 20px; border: 1px solid #4caf50; border-radius: 4px; padding: 15px; background-color: #f1f8e9;">
+      <h3 style="margin-top: 0; color: #2e7d32;">✓ Data Extracted Successfully</h3>
+
+      <div style="margin-bottom: 15px;">
+        <h4 style="margin-bottom: 5px;">Personal Information:</h4>
+        <div style="margin-left: 15px;">
+          <p><strong>Name:</strong> {{extractedData.personalInfo.firstName}} {{extractedData.personalInfo.middleName}}
+            {{extractedData.personalInfo.lastName}}</p>
+          <p><strong>Mother's Name:</strong> {{extractedData.personalInfo.mothersName}}</p>
+          <p><strong>Gender:</strong> {{extractedData.personalInfo.gender}}</p>
+        </div>
+      </div>
+
+      <div>
+        <h4 style="margin-bottom: 5px;">Academic Information:</h4>
+        <div style="margin-left: 15px;">
+          <p><strong>Board:</strong> {{extractedData.academicInfo.board}}</p>
+          <p><strong>Passing Year:</strong> {{extractedData.academicInfo.passingYear}}</p>
+          <p><strong>Total Marks:</strong> {{extractedData.academicInfo.totalMarks}}</p>
+          <p><strong>Percentage:</strong> {{extractedData.academicInfo.percentage}}%</p>
+          <div *ngIf="extractedData.academicInfo.subjects && extractedData.academicInfo.subjects.length > 0">
+            <p><strong>Subjects:</strong></p>
+            <ul style="margin-top: 5px;">
+              <li *ngFor="let subject of extractedData.academicInfo.subjects">
+                {{subject.name}}: {{subject.marks}} marks
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <p style="margin-top: 15px; font-size: 12px; color: #666;">
+        <em>Please review the extracted data. You can edit it in the form after submission.</em>
+      </p>
+    </div>
+    <div style="margin-top: 20px; width: 100%; display: flex; justify-content: flex-end;">
+      <button mat-raised-button color="primary"
+        [disabled]="!selectedFile || isVerifying || isExtracting || verificationFailed || !extractedData"
+        (click)="submit()">
+        Submit & Auto-fill Form
+      </button>
+    </div>
+  </div>
+</mat-dialog-content>
