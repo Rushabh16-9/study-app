@@ -90,7 +90,7 @@ async function extractWithGemini(imageBuffer, mimeType, expectedDocType) {
 STEP 1 - STRICT VERIFICATION: Verify if this image is EXACTLY a "${expectedDocType || 'SSC or HSC Marksheet'}".
 - If the expected type is "SSC Marksheet", the image MUST be a 10th grade marksheet. If the image is a 12th grade/HSC marksheet, you MUST reject it by setting "notAMarksheet": true.
 - If the expected type is "HSC Marksheet", the image MUST be a 12th grade marksheet. If the image is a 10th grade/SSC marksheet, you MUST reject it by setting "notAMarksheet": true.
-- If the image is a photo, ID card, blank page, or any other non-academic document, set "notAMarksheet": true.
+- CRITICAL: If the image is a picture of a person, an apple, a random object, scenery, a blank page, or ANY non-academic document, you MUST immediately reject it by setting "notAMarksheet": true and providing a descriptive "invalidReason" (e.g. "This is a photo of a random object, not a marksheet").
 
 STEP 2 - EXTRACT: If the document strictly matches the expected type, extract the fields below.
 

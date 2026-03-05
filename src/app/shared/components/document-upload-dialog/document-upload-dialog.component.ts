@@ -12,7 +12,7 @@ import { ExtractedMarksheetData } from 'app/shared/models/document-extraction.mo
 export class DocumentUploadDialogComponent implements OnInit {
 
     selectedFile: File | null = null;
-    imagePreviewUrl: string | ArrayBuffer | null = null;
+    imagePreviewUrl: string | null = null;
     isExtracting: boolean = false;
     isVerifying: boolean = false;
     extractedData: ExtractedMarksheetData | null = null;
@@ -34,7 +34,7 @@ export class DocumentUploadDialogComponent implements OnInit {
             this.selectedFile = this.data.file;
             if (this.selectedFile.type.startsWith('image/')) {
                 const reader = new FileReader();
-                reader.onload = e => this.imagePreviewUrl = reader.result;
+                reader.onload = e => this.imagePreviewUrl = reader.result as string;
                 reader.readAsDataURL(this.selectedFile);
             }
             this.extractData();
@@ -50,7 +50,7 @@ export class DocumentUploadDialogComponent implements OnInit {
 
             if (file.type.startsWith('image/')) {
                 const reader = new FileReader();
-                reader.onload = e => this.imagePreviewUrl = reader.result;
+                reader.onload = e => this.imagePreviewUrl = reader.result as string;
                 reader.readAsDataURL(file);
             } else {
                 this.imagePreviewUrl = null;

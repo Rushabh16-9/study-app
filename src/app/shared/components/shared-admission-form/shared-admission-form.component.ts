@@ -5827,9 +5827,9 @@ export class SharedAdmissionFormComponent implements OnInit {
 
             if ((conf.ssc.checkCondition && conf.ssc.display) && itemRow.confNameSelected == conf.confName) {
 
-              this.showSscBlk = true;
+              this.showSscBlk = false;
 
-              if (this.formData.educationInfo.enggInfo.ssc.subjectInfoReq) {
+              if (this.formData.educationInfo.enggInfo.ssc.subjectInfoReq && this.showSscBlk) {
 
                 const maths = <UntypedFormGroup>this.educationInfoForm.controls.eduInfo['controls'].enggInfo['controls'].ssc.controls.subjectInfo.controls.maths;
 
@@ -7976,6 +7976,7 @@ export class SharedAdmissionFormComponent implements OnInit {
           }
 
           this.updateDocumentStatus(values.docId);
+          this.updateEduListRowUploadStatus(values.docId, data.dataJson.fileName);
 
           this._snackBarMsgComponent.openSnackBar(data.message, 'x', 'success-snackbar', 5000);
         } else if (data.status == 0) {
@@ -8008,6 +8009,7 @@ export class SharedAdmissionFormComponent implements OnInit {
           }
 
           this.updateDocumentStatus(values.docId);
+          this.updateEduListRowUploadStatus(values.docId, data.dataJson.fileName);
 
           this._snackBarMsgComponent.openSnackBar(data.message, 'x', 'success-snackbar', 5000);
         } else if (data.status == 0) {
@@ -8022,6 +8024,35 @@ export class SharedAdmissionFormComponent implements OnInit {
     });
   }
 
+  /**
+   * After a document is uploaded in the Upload Documents section,
+   * also mark the matching underGraduate.list row as uploaded.
+   * reqConfId 182 = SSC, 183 = HSC.
+   */
+  updateEduListRowUploadStatus(docId: any, fileName: string) {
+    if (!docId || !fileName) return;
+
+    try {
+      const underGraduateList = this.educationInfoForm.get('eduInfo.underGraduate.list') as FormArray;
+      if (!underGraduateList || underGraduateList.length === 0) return;
+
+      for (let i = 0; i < underGraduateList.length; i++) {
+        const row = underGraduateList.at(i);
+        if (row.get('reqConfId')?.value == docId) {
+          console.log(`[UPLOAD] Marking underGraduate.list[${i}] (reqConfId=${docId}) as uploaded with file: ${fileName}`);
+          row.patchValue({
+            hasUploadedDoc: true,
+            docBrowsed: false,
+            docToUpload: fileName,
+            docError: false
+          }, { emitEvent: false });
+          break;
+        }
+      }
+    } catch (e) {
+      console.warn('[UPLOAD] Could not update underGraduate list row upload status', e);
+    }
+  }
   openImageCropperDialog(imageEvent, postParam: any) {
 
     let dialogRef = this.dialog.open(ImageCropperDialogComponent, {
@@ -9036,7 +9067,7 @@ export class SharedAdmissionFormComponent implements OnInit {
 
       const maths = <UntypedFormGroup>this.educationInfoForm.controls.eduInfo['controls'].enggInfo['controls'].ssc.controls.subjectInfo.controls.maths;
 
-      this.showSscBlk = conf.ssc.display;
+      this.showSscBlk = false; // conf.ssc.display; disabled by user request
 
       if (this.showSscBlk) {
 
@@ -9665,19 +9696,30 @@ export class SharedAdmissionFormComponent implements OnInit {
     control.controls.docBrowsed.setValue(true, { emitEvent: false });
     control.controls.showDocResetBtn.setValue(false, { emitEvent: false });
 
-    // Check if this is an HSC/SSC document
-    const confName = control.get('confNameSelected')?.value || '';
-    const confNameLower = (confName || '').toString().toLowerCase();
+    // Use reqConfId directly from the form row (182=SSC, 183=HSC)
+    const reqConfId = control.get('reqConfId')?.value;
     let docId: any = null;
 
-    console.log('[UPLOAD] Education document - confName:', confName);
+    console.log('[UPLOAD] Education document - reqConfId:', reqConfId);
 
-    if (confNameLower.includes('ssc') || confNameLower.includes('10')) {
-      docId = this.findDocumentIdByTitle(['ssc', '10th', 'tenth']);
-      console.log('[UPLOAD] Detected SSC document, docId:', docId);
-    } else if (confNameLower.includes('hsc') || confNameLower.includes('12')) {
-      docId = this.findDocumentIdByTitle(['hsc', '12th', 'twelfth']);
-      console.log('[UPLOAD] Detected HSC document, docId:', docId);
+    if (reqConfId == 182) {
+      docId = 182;
+      console.log('[UPLOAD] reqConfId 182 = SSC, using docId:', docId);
+    } else if (reqConfId == 183) {
+      docId = 183;
+      console.log('[UPLOAD] reqConfId 183 = HSC, using docId:', docId);
+    } else {
+      // Fallback: try to detect from confName if reqConfId is not set
+      const confName = control.get('confNameSelected')?.value || '';
+      const confNameLower = (confName || '').toString().toLowerCase();
+      console.log('[UPLOAD] reqConfId not set, falling back to confName detection:', confName);
+      if (confNameLower.includes('ssc') || confNameLower.includes('10')) {
+        docId = this.findDocumentIdByTitle(['ssc', '10th', 'tenth']);
+        console.log('[UPLOAD] Fallback detected SSC document, docId:', docId);
+      } else if (confNameLower.includes('hsc') || confNameLower.includes('12')) {
+        docId = this.findDocumentIdByTitle(['hsc', '12th', 'twelfth']);
+        console.log('[UPLOAD] Fallback detected HSC document, docId:', docId);
+      }
     }
 
     // If this is HSC/SSC and we have docId, use the same upload method as Upload Documents section
@@ -10373,8 +10415,19 @@ export class SharedAdmissionFormComponent implements OnInit {
         if (genderLower.includes('female')) patchValues.gender = 'female';
       }
 
+      // Handle ABC ID
+      if (pi.abcId) patchValues.abcId = pi.abcId;
+
       console.log('Patching Personal Info:', patchValues);
       piForm.patchValue(patchValues);
+
+      if (pi.candidateName) {
+        // Disable the field as requested by the user
+        const fullNameControl = piForm.get('fullNameMarksheet');
+        if (fullNameControl) {
+          fullNameControl.disable();
+        }
+      }
     }
 
     // 2. Patch Academic Info
@@ -10390,21 +10443,32 @@ export class SharedAdmissionFormComponent implements OnInit {
       let isHSC = exam.includes('hsc') || exam.includes('12th') || exam.includes('higher') || exam.includes('twelfth');
       let isSSC = !isHSC && (exam.includes('ssc') || exam.includes('10th') || exam.includes('secondary') || exam.includes('tenth'));
 
-      // --- JSON CONFIGURATION OVERRIDE based on user request ---
+      // --- OVERRIDE via reqConfId (182=SSC, 183=HSC) ---
       if (docId) {
         console.log(`[DEBUG] Document ID provided for patching: ${docId}`);
 
-        const knownHscId = this.findDocumentIdByTitle(['hsc', '12th']);
-        const knownSscId = this.findDocumentIdByTitle(['ssc', '10th']);
-
-        if (knownHscId && docId == knownHscId) {
-          console.log('[DEBUG] Document ID matches known HSC document configuration. Forcing HSC mode.');
+        if (docId == 183) {
+          console.log('[DEBUG] reqConfId 183 = HSC. Forcing HSC mode.');
           isHSC = true;
           isSSC = false;
-        } else if (knownSscId && docId == knownSscId) {
-          console.log('[DEBUG] Document ID matches known SSC document configuration. Forcing SSC mode.');
+        } else if (docId == 182) {
+          console.log('[DEBUG] reqConfId 182 = SSC. Forcing SSC mode.');
           isSSC = true;
           isHSC = false;
+        } else {
+          // Fallback: match by document title
+          const knownHscId = this.findDocumentIdByTitle(['hsc', '12th']);
+          const knownSscId = this.findDocumentIdByTitle(['ssc', '10th']);
+
+          if (knownHscId && docId == knownHscId) {
+            console.log('[DEBUG] Document ID matches known HSC document configuration. Forcing HSC mode.');
+            isHSC = true;
+            isSSC = false;
+          } else if (knownSscId && docId == knownSscId) {
+            console.log('[DEBUG] Document ID matches known SSC document configuration. Forcing SSC mode.');
+            isSSC = true;
+            isHSC = false;
+          }
         }
       }
 
@@ -10429,21 +10493,15 @@ export class SharedAdmissionFormComponent implements OnInit {
 
       if (isSSC) {
         // --- SSC PATCHING ---
-        console.log('[DEBUG] Starting SSC Patching via JSON/Detection Rule...');
+        console.log('[DEBUG] Starting SSC Patching via reqConfId=182...');
 
         if (!this.showSscBlk) {
-          console.log('[DEBUG] Forcing SSC Block Visibility via showSscBlk = true');
-          this.showSscBlk = true;
+          console.log('[DEBUG] NOT Forcing SSC Block Visibility (disabled by user)');
+          // this.showSscBlk = true;
         }
 
+        // Patch enggInfo.ssc if available
         try {
-          // Sync Document Status for SSC
-          const sscDocId = docId || this.findDocumentIdByTitle(['ssc', '10th']);
-          if (sscDocId) {
-            console.log(`[DEBUG] Updating SSC Document Status for ID: ${sscDocId}`);
-            this.updateDocumentStatus(sscDocId);
-          }
-
           const sscGroup = this.educationInfoForm.get('eduInfo.enggInfo.ssc.subjectInfo.maths');
           if (sscGroup) {
             sscGroup.patchValue({
@@ -10452,7 +10510,38 @@ export class SharedAdmissionFormComponent implements OnInit {
               totalPercentage: ai.percentage
             });
           }
-        } catch (e) { console.warn('Could not patch SSC', e); }
+        } catch (e) { console.warn('Could not patch enggInfo SSC', e); }
+
+        // Patch the underGraduate.list row with reqConfId == 182
+        try {
+          const underGraduateList = this.educationInfoForm.get('eduInfo.underGraduate.list') as FormArray;
+          if (underGraduateList && underGraduateList.length > 0) {
+            for (let i = 0; i < underGraduateList.length; i++) {
+              const row = underGraduateList.at(i);
+              if (row.get('reqConfId')?.value == 182) {
+                console.log(`[DEBUG] Found SSC row in underGraduate.list at index ${i} (reqConfId=182). Patching...`);
+                const sscPatch: any = {
+                  ...academicValues,
+                  gradingSystem: 'percentage',
+                  showMarksBlk: true,
+                  showCgpaBlk: false
+                };
+                if (uploadedFileName) {
+                  sscPatch.hasUploadedDoc = true;
+                  sscPatch.docBrowsed = false;
+                  sscPatch.showDocumentUpload = true;
+                  sscPatch.docToUpload = uploadedFileName;
+                }
+                row.patchValue(sscPatch);
+                if (ai.percentage) row.patchValue({ percentageOrCgpa: ai.percentage });
+                // Update Upload Documents section status
+                const sscDocId = docId || 182;
+                this.updateDocumentStatus(sscDocId);
+                break;
+              }
+            }
+          }
+        } catch (e) { console.warn('Could not patch underGraduate SSC row', e); }
 
       } else if (isHSC) {
         // --- HSC PATCHING ---
@@ -10540,49 +10629,38 @@ export class SharedAdmissionFormComponent implements OnInit {
           }
         } catch (e) { console.warn('Could not patch graduate list', e); }
 
+        // Patch the underGraduate.list row with reqConfId == 183
         try {
           const underGraduateList = this.educationInfoForm.get('eduInfo.underGraduate.list') as FormArray;
           if (underGraduateList && underGraduateList.length > 0) {
-            console.log('[DEBUG] Checking Undergraduate List for HSC row...');
             let dataPatched = false;
 
             for (let i = 0; i < underGraduateList.length; i++) {
               const row = underGraduateList.at(i);
-              const confName = row.get('confName')?.value;
-              const fieldsLabel = row.get('fieldsLabel')?.value;
+              const rowReqConfId = row.get('reqConfId')?.value;
+              console.log(`[DEBUG] UnderGrad Row ${i} - reqConfId: ${rowReqConfId}`);
 
-              console.log(`[DEBUG] UnderGrad Row ${i} - confName: ${confName}, fieldsLabel:`, fieldsLabel);
-
-              // Heuristic to identify HSC row
-              let isHscRow = false;
-              if (confName && (typeof confName === 'string') && (confName.toLowerCase().includes('hsc') || confName.toLowerCase().includes('12th'))) {
-                isHscRow = true;
-              } else if (fieldsLabel && fieldsLabel.boardName && (fieldsLabel.boardName.toLowerCase().includes('hsc') || fieldsLabel.boardName.toLowerCase().includes('12th') || fieldsLabel.boardName.toLowerCase().includes('higher'))) {
-                isHscRow = true;
-              }
-
-              if (isHscRow) {
-                console.log(`[DEBUG] Found HSC Row in UnderGrad List at index ${i}. Patching...`);
+              if (rowReqConfId == 183) {
+                console.log(`[DEBUG] Found HSC row in underGraduate.list at index ${i} (reqConfId=183). Patching...`);
                 row.patchValue(genericPatch);
                 if (ai.percentage) row.patchValue({ percentageOrCgpa: ai.percentage });
+                // Update Upload Documents section status
+                const hscDocId = docId || 183;
+                this.updateDocumentStatus(hscDocId);
                 dataPatched = true;
                 break;
               }
             }
 
             if (!dataPatched) {
-              console.warn('[DEBUG] Could not find a specific HSC row in Undergraduate List.');
-              // Fallback: If 2+ rows, likely 0=SSC, 1=HSC.
+              console.warn('[DEBUG] Could not find reqConfId=183 HSC row. Falling back to index 1 if available.');
               if (underGraduateList.length > 1) {
-                console.log('[DEBUG] Patching Index 1 as fallback for HSC (assuming Index 0 is SSC).');
                 underGraduateList.at(1).patchValue(genericPatch);
                 if (ai.percentage) underGraduateList.at(1).patchValue({ percentageOrCgpa: ai.percentage });
-              } else {
-                console.warn('[DEBUG] Only 1 row found and it did not match HSC criteria. NOT patching to avoid overwriting SSC.');
               }
             }
           }
-        } catch (e) { console.warn('Could not patch undergraduate list', e); }
+        } catch (e) { console.warn('Could not patch underGraduate HSC row', e); }
 
       } else {
         // --- FALLBACKS ---

@@ -228,15 +228,22 @@ export class AdmissionService {
 
     // Use local Node server for uploads to ensure file saving and status updates work with AI features
     const url = 'http://localhost:3000/api/Admission/uploadDocImage';
-    // const url = admissionApiUrls.uploadDocImage;
     let commonPostValues = globalFunctions.getCommonPostValues();
 
-    let postData = commonPostValues;
-    postData['docId'] = values.docId;
-    postData['docValue'] = values.docValue;
-    postData['page'] = page;
+    const fd = new FormData();
+    for (var key in commonPostValues) {
+      if (commonPostValues.hasOwnProperty(key)) {
+        fd.append(key, commonPostValues[key]);
+      }
+    }
 
-    return this.http.post<any>(url, postData);
+    fd.append('page', page);
+    fd.append('docId', values.docId);
+    // Append the file under the 'document' key which multer expects
+    const file = values.docValue;
+    fd.append('document', file, file.name || 'upload');
+
+    return this.http.post<any>(url, fd).pipe(timeout(globalFunctions.timeoutSeconds()));
   }
 
   uploadPdf(file: any, docId = '', page = ''): Observable<any> {
