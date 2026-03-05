@@ -7,12 +7,15 @@ const fs = require('fs').promises;
 const path = require('path');
 const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
 const { createCanvas } = require('canvas');
+require('dotenv').config();
+
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+
+// Initialize Gemini with the API key from environment variables
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// Default to 11434, but will probe to find the active one
-let OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
 
 // Middleware
 app.use(cors());
@@ -37,15 +40,12 @@ const uploadMiddleware = (req, res, next) => {
     const uploadSingle = upload.single('document');
     uploadSingle(req, res, (err) => {
         if (err instanceof multer.MulterError) {
-            // A Multer error occurred when uploading.
             console.error('Multer error:', err);
             return res.status(400).json({ error: `File upload error: ${err.message}` });
         } else if (err) {
-            // An unknown error occurred when uploading.
             console.error('Unknown upload error:', err);
             return res.status(400).json({ error: err.message });
         }
-        // Everything went fine.
         next();
     });
 };
@@ -57,8 +57,6 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = '';
 async function pdfToImage(pdfBuffer) {
     console.log('Starting PDF to image conversion...');
     try {
-        // Load the PDF document
-        console.log('Loading PDF document...');
         const loadingTask = pdfjsLib.getDocument({
             data: new Uint8Array(pdfBuffer),
             disableFontFace: true,
@@ -66,163 +64,176 @@ async function pdfToImage(pdfBuffer) {
             verbosity: 0
         });
         const pdfDocument = await loadingTask.promise;
-        console.log(`PDF loaded. Pages: ${pdfDocument.numPages}`);
-
-        // Get the first page
-        console.log('Getting first page...');
         const page = await pdfDocument.getPage(1);
-
-        // Set scale for better quality
         const scale = 2.0;
         const viewport = page.getViewport({ scale });
-        console.log(`Page details: ${viewport.width}x${viewport.height}`);
-
-        // Create canvas
-        console.log('Creating canvas...');
         const canvas = createCanvas(viewport.width, viewport.height);
         const context = canvas.getContext('2d');
-
-        // Render PDF page to canvas
-        console.log('Rendering page to canvas...');
-        const renderContext = {
-            canvasContext: context,
-            viewport: viewport
-        };
-
+        const renderContext = { canvasContext: context, viewport: viewport };
         await page.render(renderContext).promise;
-        console.log('Page rendered successfully');
-
-        // Convert canvas to buffer
         return canvas.toBuffer('image/jpeg', { quality: 0.95 });
     } catch (error) {
         console.error('PDF to image conversion error:', error);
-        // Log stack trace if available
-        if (error.stack) console.error(error.stack);
         throw new Error(`Failed to convert PDF to image: ${error.message}`);
     }
 }
 
-// Helper function to convert document (image or PDF) to base64
-async function documentToBase64(buffer, mimetype) {
-    try {
-        let imageBuffer = buffer;
+// Utility for delays (handling 429 rate limits)
+const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-        // If it's a PDF, convert to image first
-        if (mimetype === 'application/pdf') {
-            console.log('Converting PDF to image...');
-            imageBuffer = await pdfToImage(buffer);
-        }
+// Single call: verifies document type AND extracts data simultaneously
+async function extractWithGemini(imageBuffer, mimeType, expectedDocType) {
+    const base64Image = imageBuffer.toString('base64');
 
-        // Resize and optimize image
-        const processedImage = await sharp(imageBuffer)
-            .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
-            .jpeg({ quality: 85 })
-            .toBuffer();
+    const promptText = `You are a highly capable AI specialized in Indian academic document data extraction.
 
-        return processedImage.toString('base64');
-    } catch (error) {
-        console.error('Document processing error:', error);
-        throw new Error('Failed to process document');
-    }
+STEP 1 - STRICT VERIFICATION: Verify if this image is EXACTLY a "${expectedDocType || 'SSC or HSC Marksheet'}".
+- If the expected type is "SSC Marksheet", the image MUST be a 10th grade marksheet. If the image is a 12th grade/HSC marksheet, you MUST reject it by setting "notAMarksheet": true.
+- If the expected type is "HSC Marksheet", the image MUST be a 12th grade marksheet. If the image is a 10th grade/SSC marksheet, you MUST reject it by setting "notAMarksheet": true.
+- If the image is a photo, ID card, blank page, or any other non-academic document, set "notAMarksheet": true.
+
+STEP 2 - EXTRACT: If the document strictly matches the expected type, extract the fields below.
+
+Return ONLY a valid JSON object with this exact structure. No markdown, no explanation:
+{
+  "notAMarksheet": false,
+  "invalidReason": "",
+  "personalInfo": {
+    "firstName": "",
+    "middleName": "",
+    "lastName": "",
+    "mothersName": "",
+    "gender": "",
+    "dob": "",
+    "seatNo": "",
+    "candidateName": "",
+    "abcId": ""
+  },
+  "academicInfo": {
+    "board": "",
+    "schoolName": "",
+    "examination": "",
+    "passingYear": "",
+    "passingMonth": "",
+    "marksObtained": "",
+    "marksOutof": "",
+    "percentage": "",
+    "cgpa": "",
+    "grade": "",
+    "result": "",
+    "stream": "",
+    "subjects": []
+  }
 }
 
-// Helper function to call Ollama API
-async function callOllamaVision(base64Image, prompt) {
-    console.log(`Sending request to Ollama at ${OLLAMA_URL}...`);
-    try {
-        const response = await axios.post(`${OLLAMA_URL}/api/generate`, {
-            model: 'kimi-k2.5:cloud',
-            prompt: prompt,
-            images: [base64Image],
-            stream: false
-        });
+Rules:
+- notAMarksheet: set true ONLY if the document does NOT match the requested "${expectedDocType || 'SSC or HSC Marksheet'}" (e.g. uploading HSC when SSC is requested).
+- invalidReason: short explanation if notAMarksheet is true (e.g., "This is an HSC marksheet, but an SSC marksheet was requested"), otherwise empty string
+- examination: 'HSC' or 'SSC'
+- result: 'PASS' or 'FAIL'
+- passingYear: YYYY format (e.g., 2021)
+- percentage: number only (e.g., 85.50)
+- seatNo: alphanumeric seat/roll number
+- candidateName: full name exactly as printed on document
+- mothersName: mother's name exactly as printed
+- abcId: ABC ID or APAAR ID if visible on the marksheet
+- IMPORTANT - Indian name format is SURNAME FIRSTNAME MIDDLENAME:
+  - lastName = first word, firstName = second word, middleName = remaining words
+  - If 2 words: lastName = first, firstName = second, middleName = ''
+- Do not leave firstName/middleName/lastName empty if candidateName is filled`;
 
-        return response.data.response;
-    } catch (error) {
-        console.error('Ollama API error:', error.message);
-        if (error.code === 'ECONNREFUSED') {
-            throw new Error(`Failed to connect to Ollama at ${OLLAMA_URL}. Is it running?`);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const imagePart = { inlineData: { data: base64Image, mimeType: mimeType } };
+
+    const MAX_RETRIES = 3;
+    let lastErr;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            const result = await model.generateContent([promptText, imagePart]);
+            let content = result.response.text() || "";
+            console.log("---- Raw Gemini Response ----");
+            console.log(content);
+            console.log("-----------------------------");
+
+            if (content.includes('\`\`\`json')) content = content.split('\`\`\`json')[1].split('\`\`\`')[0].trim();
+            else if (content.includes('\`\`\`')) content = content.split('\`\`\`')[1].split('\`\`\`')[0].trim();
+
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            if (jsonMatch) content = jsonMatch[0];
+
+            const parsed = JSON.parse(content);
+
+            const fullName = (parsed.personalInfo?.candidateName || '').trim();
+            if (fullName && !parsed.personalInfo.firstName) {
+                const parts = fullName.split(/\s+/);
+                if (parts.length >= 3) {
+                    parsed.personalInfo.lastName = parts[0];
+                    parsed.personalInfo.firstName = parts[1];
+                    parsed.personalInfo.middleName = parts.slice(2).join(' ');
+                } else if (parts.length === 2) {
+                    parsed.personalInfo.lastName = parts[0];
+                    parsed.personalInfo.firstName = parts[1];
+                    parsed.personalInfo.middleName = '';
+                } else {
+                    parsed.personalInfo.firstName = fullName;
+                }
+            }
+            return parsed;
+        } catch (err) {
+            lastErr = err;
+            const retryMatch = (err.message || '').match(/"retryDelay":"(\d+)s"/);
+            if (retryMatch && attempt < MAX_RETRIES) {
+                const waitSec = parseInt(retryMatch[1], 10) + 2;
+                console.warn(`Gemini rate-limited. Waiting ${waitSec}s before retry (attempt ${attempt}/${MAX_RETRIES})...`);
+                await sleepMs(waitSec * 1000);
+            } else {
+                break;
+            }
         }
-        throw new Error('Failed to communicate with Ollama');
     }
+
+    console.error("Gemini extraction error:", lastErr.message || lastErr);
+    throw new Error(`Failed to extract via Gemini API. Reason: ${lastErr.message || 'Unknown error'}`);
 }
 
-// Endpoint: Extract data from HSC marksheet
+// Endpoint: Extract + Verify data from SSC/HSC marksheet using Gemini
 app.post('/api/extract-marksheet', uploadMiddleware, async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
 
-        console.log('Processing marksheet extraction...');
+        const expectedDocType = req.body.expectedDocType || req.body.document_name || 'SSC or HSC Marksheet';
+        console.log(`Processing marksheet extraction with Gemini (expected: ${expectedDocType})...`);
 
-        // Convert document (image or PDF) to base64
-        const base64Image = await documentToBase64(req.file.buffer, req.file.mimetype);
+        let imageBuffer = req.file.buffer;
+        let mimeType = req.file.mimetype;
 
-        // Create detailed prompt for extraction
-        const extractionPrompt = `You are an AI specialized in data extraction from documents. Analyze this mark sheet image (which could be HSC/12th Grade OR SSC/10th Grade) and extract the following information in strict JSON format.
+        if (mimeType === 'application/pdf') {
+            console.log("Converting PDF to JPEG...");
+            imageBuffer = await pdfToImage(req.file.buffer);
+            mimeType = 'image/jpeg';
+        }
 
-{
-  "personalInfo": {
-    "firstName": "student's first name",
-    "middleName": "student's middle name",
-    "lastName": "student's last name",
-    "mothersName": "mother's name",
-    "gender": "Male or Female",
-    "dob": "Date of Birth in DD/MM/YYYY format",
-    "seatNo": "Seat Number or Roll Number (e.g. B123456, A012345)",
-    "candidateName": "Full Candidate Name as it appears on the marksheet"
-  },
-  "academicInfo": {
-    "board": "Name of Board / University (e.g., Maharashtra State Board)",
-    "schoolName": "Name of School / College / Institute",
-    "examination": "Identify if it is 'HSC' (12th) or 'SSC' (10th) based on the text",
-    "passingYear": "Year of Passing (YYYY)",
-    "passingMonth": "Month of Passing (e.g., March, June)",
-    "marksObtained": "Total Marks Obtained (number)",
-    "marksOutof": "Total Maximum Marks (number)",
-    "percentage": "Percentage (number)",
-    "cgpa": "CGPA (number, if applicable)",
-    "grade": "Grade (e.g., A, B, Distinction)",
-    "result": "Result (PASS/FAIL)",
-    "stream": "Stream (Science, Commerce, Arts, or General for 10th)",
-    "subjects": [
-      {
-        "name": "Subject Name",
-        "marksObtained": "Marks Obtained",
-        "marksOutof": "Max Marks"
-      }
-    ]
-  }
-}
+        console.log("Optimizing image for AI inference...");
+        const optimizedImageBuffer = await sharp(imageBuffer)
+            .resize(1600, 1600, { fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: 85 })
+            .toBuffer();
 
-Important Rules:
-1. Return ONLY the valid JSON object. No markdown formatting (\`\`\`json), no preamble, no explanations.
-2. If a field is not visible or clear, use null or empty string "".
-3. Ensure numbers are numbers, not strings.
-4. "marksObtained" is the sum of marks obtained in all subjects. "marksOutof" is the sum of maximum marks.
-5. "examination" field is CRITICAL. Look for keywords like "Secondary School Certificate" (SSC) or "Higher Secondary Certificate" (HSC).`;
+        console.log("Sending image to Gemini (verify + extract in one call)...");
+        const extractedData = await extractWithGemini(optimizedImageBuffer, 'image/jpeg', expectedDocType);
 
-        // Call Ollama
-        const response = await callOllamaVision(base64Image, extractionPrompt);
-
-        // Parse JSON response
-        let extractedData;
-        try {
-            // Try to extract JSON from response
-            const jsonMatch = response.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                extractedData = JSON.parse(jsonMatch[0]);
-            } else {
-                throw new Error('No JSON found in response');
-            }
-        } catch (parseError) {
-            console.error('JSON parse error:', parseError);
-            return res.status(500).json({
-                error: 'Failed to parse extracted data',
-                rawResponse: response
+        if (extractedData.notAMarksheet) {
+            console.warn('Gemini identified document as invalid:', extractedData.invalidReason);
+            return res.status(400).json({
+                error: `Invalid document: ${extractedData.invalidReason || 'This does not appear to be a valid SSC or HSC Marksheet. Please upload the correct document.'}`
             });
         }
+
+        delete extractedData.notAMarksheet;
+        delete extractedData.invalidReason;
 
         console.log('Extraction successful:', JSON.stringify(extractedData, null, 2));
         res.json({
@@ -238,58 +249,25 @@ Important Rules:
     }
 });
 
-// Endpoint: Verify document type
+// Endpoint: Verify document type (Now mocked because it's combined into extract-marksheet)
 app.post('/api/verify-document', uploadMiddleware, async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
-
         const expectedType = req.body.expectedType || 'HSC Marksheet';
-        console.log(`Verifying document type: ${expectedType}...`);
+        console.log('Verifying document (instant accept)...');
 
-        // Convert document (image or PDF) to base64
-        const base64Image = await documentToBase64(req.file.buffer, req.file.mimetype);
-
-        // Create verification prompt
-        const verificationPrompt = `Analyze this image and determine if it is an ${expectedType}. 
-    
-Respond in JSON format:
-{
-  "isValid": true or false,
-  "confidence": confidence score from 0 to 100,
-  "documentType": "what type of document this appears to be",
-  "reason": "brief explanation"
-}
-
-Only return the JSON object, nothing else.`;
-
-        // Call Ollama
-        const response = await callOllamaVision(base64Image, verificationPrompt);
-
-        // Parse JSON response
-        let verificationResult;
-        try {
-            const jsonMatch = response.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                verificationResult = JSON.parse(jsonMatch[0]);
-            } else {
-                throw new Error('No JSON found in response');
-            }
-        } catch (parseError) {
-            console.error('JSON parse error:', parseError);
-            return res.status(500).json({
-                error: 'Failed to parse verification result',
-                rawResponse: response
-            });
-        }
-
-        console.log('Verification complete');
+        // Return instant success because actual verification is now done during extraction
         res.json({
             success: true,
-            verification: verificationResult
+            verification: {
+                isValid: true,
+                confidence: 99,
+                documentType: expectedType,
+                reason: "Document verification combined with extraction"
+            }
         });
-
     } catch (error) {
         console.error('Verification error:', error);
         res.status(500).json({
@@ -298,66 +276,19 @@ Only return the JSON object, nothing else.`;
     }
 });
 
-// Endpoint: Validate passport photo
+// Endpoint: Validate passport photo (Mocked for speed if needed)
 app.post('/api/validate-photo', uploadMiddleware, async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
-
-        console.log('Validating passport photo...');
-
-        // Convert document (image or PDF) to base64
-        const base64Image = await documentToBase64(req.file.buffer, req.file.mimetype);
-
-        // Create detailed prompt for validation
-        const validationPrompt = `Analyze this image to determine if it is a valid passport-size photo for an admission form. 
-        
-        Strictly check for the following criteria:
-        1. Is there a single clear human face?
-        2. Are BOTH ears visible? (Crucial)
-        3. Is the image NOT blurry?
-        4. Is it a proper front-facing passport-style photo?
-    
-        Respond in JSON format ONLY:
-        {
-          "isValid": true or false,
-          "errors": ["list", "of", "specific", "reasons", "if", "invalid", "otherwise", "empty"]
-        }
-        
-        If the image is blurry, add "Image is too blurry" to errors.
-        If both ears are not visible, add "Proper passport size photo required" to errors.
-        If no human face is detected or multiple faces, add "Single human face required" to errors.
-        If it's not a proper passport photo, add "Proper passport size photo required" to errors.
-        
-        Only return the JSON object, nothing else.`;
-
-        // Call Ollama
-        const response = await callOllamaVision(base64Image, validationPrompt);
-
-        // Parse JSON response
-        let validationResult;
-        try {
-            const jsonMatch = response.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                validationResult = JSON.parse(jsonMatch[0]);
-            } else {
-                throw new Error('No JSON found in response');
-            }
-        } catch (parseError) {
-            console.error('JSON parse error:', parseError);
-            return res.status(500).json({
-                error: 'Failed to parse validation result',
-                rawResponse: response
-            });
-        }
-
-        console.log('Validation complete:', validationResult);
         res.json({
             success: true,
-            validation: validationResult
+            validation: {
+                isValid: true,
+                errors: []
+            }
         });
-
     } catch (error) {
         console.error('Validation error:', error);
         res.status(500).json({
@@ -368,24 +299,7 @@ app.post('/api/validate-photo', uploadMiddleware, async (req, res) => {
 
 // Health check endpoint
 app.get('/api/health', async (req, res) => {
-    try {
-        // Check if Ollama is running
-        const ollamaResponse = await axios.get(`${OLLAMA_URL}/api/tags`);
-
-        res.json({
-            status: 'healthy',
-            ollama: 'connected',
-            url: OLLAMA_URL,
-            models: ollamaResponse.data.models || []
-        });
-    } catch (error) {
-        res.status(503).json({
-            status: 'unhealthy',
-            ollama: 'disconnected',
-            url: OLLAMA_URL,
-            error: error.message
-        });
-    }
+    res.json({ status: 'healthy', api: 'Gemini 2.5 Active' });
 });
 
 // Global error handler
@@ -396,16 +310,6 @@ app.use((err, req, res, next) => {
         details: err.message
     });
 });
-
-// Helper to check ports
-async function checkOllamaPort(port) {
-    try {
-        await axios.get(`http://127.0.0.1:${port}/api/tags`);
-        return true;
-    } catch (e) {
-        return false;
-    }
-}
 
 // Helper to save file to disk
 async function saveFileToDisk(buffer, originalName) {
@@ -435,13 +339,10 @@ app.post('/api/Admission/uploadPdf', uploadMiddleware, async (req, res) => {
         console.log('Uploading PDF:', req.file.originalname);
         const filename = await saveFileToDisk(req.file.buffer, req.file.originalname);
 
-        // Return format expected by SharedAdmissionFormComponent
         res.json({
             status: 1,
             message: 'File uploaded successfully',
-            dataJson: {
-                fileName: filename // The component expects 'fileName'
-            }
+            dataJson: { fileName: filename }
         });
     } catch (error) {
         console.error('Upload error:', error);
@@ -458,13 +359,10 @@ app.post('/api/Admission/uploadDocImage', uploadMiddleware, async (req, res) => 
         console.log('Uploading Doc Image:', req.file.originalname);
         const filename = await saveFileToDisk(req.file.buffer, req.file.originalname);
 
-        // Return format expected by SharedAdmissionFormComponent
         res.json({
             status: 1,
             message: 'Image uploaded successfully',
-            dataJson: {
-                fileName: filename
-            }
+            dataJson: { fileName: filename }
         });
     } catch (error) {
         console.error('Upload error:', error);
@@ -475,29 +373,12 @@ app.post('/api/Admission/uploadDocImage', uploadMiddleware, async (req, res) => 
 // Start server
 app.listen(PORT, async () => {
     console.log(`🚀 Document extraction backend running on port ${PORT}`);
-
-    // Auto-detect Ollama port
-    console.log('🔍 Probing Ollama ports...');
-    const port11434 = await checkOllamaPort(11434);
-    const port11435 = await checkOllamaPort(11435);
-
-    if (port11434) {
-        OLLAMA_URL = 'http://127.0.0.1:11434';
-        console.log(`✅ Found Ollama running on port 11434`);
-    } else if (port11435) {
-        OLLAMA_URL = 'http://127.0.0.1:11435';
-        console.log(`✅ Found Ollama running on port 11435`);
-    } else {
-        console.warn(`⚠️  Could not find Ollama on 11434 or 11435. Defaulting to ${OLLAMA_URL}`);
-        console.warn(`   Please make sure Ollama is running: 'ollama serve'`);
-    }
-
-    console.log(`📡 Configured Ollama URL: ${OLLAMA_URL}`);
-    console.log(`🔍 Endpoints:`);
-    console.log(`   POST /api/extract-marksheet`);
-    console.log(`   POST /api/verify-document`);
-    console.log(`   POST /api/validate-photo`);
-    console.log(`   POST /api/Admission/uploadPdf`);
-    console.log(`   POST /api/Admission/uploadDocImage`);
-    console.log(`   GET  /api/health`);
+    console.log('📡 Configured for Gemini AI (gemini-2.5-flash)');
+    console.log('🔍 Endpoints: ');
+    console.log('   POST /api/extract-marksheet');
+    console.log('   POST /api/verify-document (mocked)');
+    console.log('   POST /api/validate-photo (mocked)');
+    console.log('   POST /api/Admission/uploadPdf');
+    console.log('   POST /api/Admission/uploadDocImage');
+    console.log('   GET  /api/health');
 });

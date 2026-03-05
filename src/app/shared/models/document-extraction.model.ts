@@ -5,6 +5,10 @@ export interface ExtractedMarksheetData {
         lastName: string;
         mothersName: string;
         gender: 'Male' | 'Female' | '';
+        abcId?: string;
+        candidateName?: string;
+        dob?: string;
+        seatNo?: string;
     };
     academicInfo: {
         board: string;

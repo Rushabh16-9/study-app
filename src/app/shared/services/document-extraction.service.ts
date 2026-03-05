@@ -16,15 +16,21 @@ export class DocumentExtractionService {
     /**
      * Extract data from HSC marksheet image
      */
-    extractMarksheetData(file: File): Observable<ExtractionResponse> {
+    extractMarksheetData(file: File, documentType?: string): Observable<ExtractionResponse> {
         const formData = new FormData();
         formData.append('document', file);
+        if (documentType) {
+            formData.append('document_name', documentType);
+        }
 
         return this.http.post<ExtractionResponse>(`${this.API_URL}/extract-marksheet`, formData)
             .pipe(
                 catchError(error => {
                     console.error('Extraction error:', error);
-                    return throwError(() => new Error(error.error?.error || 'Failed to extract data from document'));
+                    const message = error.error?.error
+                        || error.message
+                        || 'Extraction service unavailable. Please ensure the backend is running.';
+                    return throwError(() => new Error(message));
                 })
             );
     }

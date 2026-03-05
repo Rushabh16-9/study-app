@@ -12,6 +12,7 @@ import { ExtractedMarksheetData } from 'app/shared/models/document-extraction.mo
 export class DocumentUploadDialogComponent implements OnInit {
 
     selectedFile: File | null = null;
+    imagePreviewUrl: string | ArrayBuffer | null = null;
     isExtracting: boolean = false;
     isVerifying: boolean = false;
     extractedData: ExtractedMarksheetData | null = null;
@@ -31,75 +32,64 @@ export class DocumentUploadDialogComponent implements OnInit {
     ngOnInit(): void {
         if (this.data.file) {
             this.selectedFile = this.data.file;
-            this.processDocument();
+            if (this.selectedFile.type.startsWith('image/')) {
+                const reader = new FileReader();
+                reader.onload = e => this.imagePreviewUrl = reader.result;
+                reader.readAsDataURL(this.selectedFile);
+            }
+            this.extractData();
         }
     }
 
     onFileSelected(event: any): void {
         if (event.target.files && event.target.files.length > 0) {
-            this.selectedFile = event.target.files[0];
+            const file = event.target.files[0];
+            this.selectedFile = file;
             this.extractionError = '';
             this.verificationFailed = false;
 
-            // Auto-start extraction and verification
-            this.processDocument();
-        }
-    }
-
-    processDocument(): void {
-        if (!this.selectedFile) return;
-
-        // Step 1: Verify document type
-        this.isVerifying = true;
-        this.verificationMessage = 'Verifying document type...';
-
-        this.extractionService.verifyDocument(this.selectedFile, this.data.document_name).subscribe({
-            next: (response) => {
-                this.isVerifying = false;
-
-                if (response.success && response.verification) {
-                    if (response.verification.isValid && response.verification.confidence > 60) {
-                        this.verificationMessage = `✓ Verified as ${response.verification.documentType}`;
-                        // Step 2: Extract data
-                        this.extractData();
-                    } else {
-                        this.verificationFailed = true;
-                        this.verificationMessage = `✗ ${response.verification.reason}`;
-                        this.extractionError = `This doesn't appear to be a valid ${this.data.document_name}. Please upload the correct document.`;
-                    }
-                } else {
-                    this.verificationFailed = true;
-                    this.extractionError = 'Failed to verify document type.';
-                }
-            },
-            error: (error) => {
-                this.isVerifying = false;
-                this.verificationFailed = true;
-                this.extractionError = 'Verification service unavailable. Please ensure the backend is running.';
-                console.error('Verification error:', error);
+            if (file.type.startsWith('image/')) {
+                const reader = new FileReader();
+                reader.onload = e => this.imagePreviewUrl = reader.result;
+                reader.readAsDataURL(file);
+            } else {
+                this.imagePreviewUrl = null;
             }
-        });
+
+            // Auto-start extraction and verification
+            this.extractData();
+        }
     }
 
     extractData(): void {
         if (!this.selectedFile) return;
 
         this.isExtracting = true;
+        this.isVerifying = true;
+        this.verificationMessage = 'Verifying and extracting data...';
         this.extractionError = '';
 
-        this.extractionService.extractMarksheetData(this.selectedFile).subscribe({
+        this.extractionService.extractMarksheetData(this.selectedFile, this.data.document_name).subscribe({
             next: (response) => {
                 this.isExtracting = false;
+                this.isVerifying = false;
 
                 if (response.success && response.data) {
+                    this.verificationMessage = `✓ Verified as ${this.data.document_name}`;
                     this.extractedData = response.data;
                     console.log('Extracted data:', this.extractedData);
                 } else {
+                    this.verificationFailed = true;
+                    this.verificationMessage = '✗ Verification failed';
                     this.extractionError = response.error || 'Failed to extract data from document.';
                 }
             },
             error: (error) => {
                 this.isExtracting = false;
+                this.isVerifying = false;
+                this.verificationFailed = true;
+                this.verificationMessage = '✗ Invalid Document';
+                // The error message comes straight from the backend (Gemini's invalidReason)
                 this.extractionError = error.message || 'Extraction service unavailable. Please ensure the backend is running.';
                 console.error('Extraction error:', error);
             }
@@ -122,7 +112,7 @@ export class DocumentUploadDialogComponent implements OnInit {
         this.verificationFailed = false;
         this.extractedData = null;
         if (this.selectedFile) {
-            this.processDocument();
+            this.extractData();
         }
     }
 }
